@@ -18,7 +18,7 @@ use std::{mem, thread};
 /// The slack messaging client.
 pub struct Client {
     token: String,
-    start_info: Option<api::rtm::StartResponse>,
+    start_info: api::rtm::StartResponse,
     channels: Vec<Channel>,
     groups: Vec<Group>,
     users: Vec<User>,
@@ -26,8 +26,8 @@ pub struct Client {
     group_ids: HashMap<String, String>,
     user_ids: HashMap<String, String>,
     rx: Option<mpsc::UnboundedReceiver<WsMessage>>,
-    sender: Option<Sender>,
-    wss_url: Option<reqwest::Url>,
+    sender: Sender,
+    wss_url: reqwest::Url,
 }
 
 impl Clone for Client {
@@ -89,72 +89,72 @@ macro_rules! try_fut {
 }
 
 impl Client {
-    /// Creates a new client from a token
-    fn new(token: &str) -> Client {
-        Client {
-            token: String::from(token),
-            start_info: None,
-            channels: Vec::new(),
-            groups: Vec::new(),
-            users: Vec::new(),
-            channel_ids: HashMap::new(),
-            group_ids: HashMap::new(),
-            user_ids: HashMap::new(),
-            rx: None,
-            sender: None,
-            wss_url: None,
-        }
-    }
+    // client_common_non_blocking!();
 
-    client_common_non_blocking!();
+    fn login_blocking(token: String) -> Result<Self, Error> {
+        let reqwest_client = reqwest::Client::new()?;
+        let start_info = try!(api::rtm::start(&reqwest_client, &token, &Default::default()));
+        let start_url = &start_info.url.clone().expect("websocket url from slack");
+        let wss_url = reqwest::Url::parse(&start_url).map_err(|e| Error::Internal(format!("Unable to parse slack websocket URL: {}", e)))?;
 
-    fn login_blocking(mut self) -> Result<Self, Error> {
-        let client = reqwest::Client::new()?;
-        let start = try!(api::rtm::start(&client, &self.token, &Default::default()));
-        let start_url = &start.url.clone().expect("websocket url from slack");
-        let wss_url = reqwest::Url::parse(&start_url)?;
-        self.wss_url = Some(wss_url);
-
-        if let Some(ref channels) = start.channels {
+        let mut channel_ids = HashMap::new();
+        let channels = if let Some(ref channels) = start_info.channels {
             for ref channel in channels.iter() {
-                self.channel_ids
+                channel_ids
                     .insert(channel.name.clone().unwrap(), channel.id.clone().unwrap());
             }
-            self.channels = channels.clone();
-        }
-        if let Some(ref groups) = start.groups {
+            channels.clone()
+        } else {
+            Vec::new()
+        };
+
+        let mut group_ids = HashMap::new();
+        let groups = if let Some(ref groups) = start_info.groups {
             for ref group in groups.iter() {
-                self.group_ids
+                group_ids
                     .insert(group.name.clone().unwrap(), group.id.clone().unwrap());
             }
-            self.groups = groups.clone();
-        }
+            groups.clone()
+        } else {
+            Vec::new()
+        };
 
-        if let Some(ref users) = start.users {
+        let mut user_ids = HashMap::new();
+        let users = if let Some(ref users) = start_info.users {
             for ref user in users.iter() {
-                self.user_ids
+                user_ids
                     .insert(user.name.clone().unwrap(), user.id.clone().unwrap());
             }
-            self.users = users.clone();
-        }
+            users.clone()
+        } else {
+            Vec::new()
+        };
 
         let (tx, rx) = mpsc::unbounded();
         let sender = Sender {
             tx: tx,
             msg_num: Arc::new(AtomicUsize::new(0)),
         };
-        self.sender = Some(sender);
-        self.rx = Some(rx);
 
-        // store rtm.Start data
-        self.start_info = Some(start);
-        Ok(self)
+        Ok(Client {
+            token: token,
+            start_info: start_info,
+            channels: channels,
+            channel_ids: channel_ids,
+            groups: groups,
+            group_ids: group_ids,
+            users: users,
+            user_ids: user_ids,
+            rx: Some(rx),
+            wss_url: wss_url,
+            sender: sender,
+        })
     }
 
-    /// Login to slack and get the websocket url (needed for calling `run`)
-    fn login(self) -> Box<Future<Item = Self, Error = Error>> {
+    /// Login to slack. `run` must be called to open the wbesocket connection.
+    pub fn login(token: String) -> Box<Future<Item = Self, Error = Error>> {
         let (tx, rx) = oneshot::channel();
-        thread::spawn(move || tx.send(self.login_blocking().into_future()));
+        thread::spawn(move || tx.send(Client::login_blocking(token).into_future()));
         Box::new(rx.map_err(Error::from).and_then(|client| client))
     }
 
@@ -164,12 +164,12 @@ impl Client {
                                      mut handler: T,
                                      handle: &tokio_core::reactor::Handle)
                                      -> Box<Future<Item = (), Error = Error> + 'a> {
-        let wss_url = match self.wss_url {
-            Some(_) => mem::replace(&mut self.wss_url, None).unwrap(),
-            None => unreachable!("login was not called"),
-        };
+        // let wss_url = match self.wss_url {
+        //     Some(_) => mem::replace(&mut self.wss_url, None).unwrap(),
+        //     None => unreachable!("login was not called"),
+        // };
 
-        let addr = match try_fut!(wss_url.to_socket_addrs()).next() {
+        let addr = match try_fut!(self.wss_url.to_socket_addrs()).next() {
             None => return Box::new(err(Error::Internal("Websocket addr not found".into()))),
             Some(a) => a,
         };
@@ -179,7 +179,7 @@ impl Client {
             None => unreachable!("Receiver missing. login was not called"),
         };
 
-        let domain = match wss_url.origin() {
+        let domain = match self.wss_url.origin() {
             url::Origin::Tuple(_, domain, _) => {
                 match domain {
                     url::Host::Domain(d) => d,
@@ -198,6 +198,7 @@ impl Client {
                 .map_err(Error::from)
                 .and_then(move |socket| cx.connect_async(&domain, socket).map_err(Error::from));
 
+        let wss_url = self.wss_url.clone();
         let stream =
             tls_handshake
                 .map_err(Error::from)
@@ -271,29 +272,18 @@ impl Client {
     }
 
     /// Connect to slack using the provided slack `token`, `EventHandler`, and `reactor::Handle`
-    pub fn connect<'a, T: EventHandler + 'a>(token: &str,
+    pub fn connect<'a, T: EventHandler + 'a, S: Into<String>>(token: S,
                                              handler: T,
                                              handle: &'a tokio_core::reactor::Handle)
                                              -> Box<Future<Item = (), Error = Error> + 'a> {
-        let client = Client::new(token);
-
-        Box::new(client
-                     .login()
+        Box::new(Client::login(token.into())
                      .and_then(move |client| client.run(handler, &handle)))
     }
 
     /// Send a shutdown message to close the connection to slack
     pub fn shutdown(&self) -> Result<(), Error> {
-        match self.sender {
-            Some(ref sender) => {
-                (&sender.tx)
-                    .send(WsMessage::Close)
-                    .map_err(|_| Error::Internal("Sending shutdown message failed".into()))
-            }
-            None => {
-                Err(Error::Internal("Cannot shutdown without a sender. Ensure you have run `login`."
-                                        .into()))
-            }
-        }
+        (&self.sender.tx)
+            .send(WsMessage::Close)
+            .map_err(|_| Error::Internal("Sending shutdown message failed".into()))
     }
 }
