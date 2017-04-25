@@ -26,6 +26,20 @@ extern crate serde_json;
 extern crate tungstenite;
 #[macro_use]
 extern crate log;
+#[macro_use]
+extern crate cfg_if;
+
+cfg_if! {
+    if #[cfg(feature = "future")] {
+        extern crate tokio_tungstenite;
+        extern crate futures;
+        extern crate tokio_core;
+        extern crate tokio_tls;
+        extern crate url;
+        extern crate native_tls;
+        pub mod future;
+    } else {}
+}
 
 pub mod error;
 pub use error::Error;
@@ -60,6 +74,29 @@ enum WsMessage {
     Text(String),
 }
 
+#[derive(Clone)]
+enum TxType {
+    Sync(mpsc::Sender<WsMessage>),
+    #[cfg(feature = "future")]
+    Future(futures::sync::mpsc::UnboundedSender<WsMessage>),
+}
+
+impl TxType {
+    fn send(&self, msg: WsMessage) -> Result<(), Error> {
+        match *self {
+            TxType::Sync(ref tx) => {
+                tx.send(msg)
+                    .map_err(|err| Error::Internal(format!("{}", err)))
+            }
+            #[cfg(feature = "future")]
+            TxType::Future(ref tx) => {
+                tx.send(msg)
+                    .map_err(|err| Error::Internal(format!("{}", err)))
+            }
+        }
+    }
+}
+
 /// The actual messaging client.
 pub struct RtmClient {
     start_response: api::rtm::StartResponse,
@@ -70,11 +107,18 @@ pub struct RtmClient {
 /// Thread-safe API for sending messages asynchronously
 #[derive(Clone)]
 pub struct Sender {
-    tx: mpsc::Sender<WsMessage>,
+    tx: TxType,
     msg_num: Arc<AtomicUsize>,
 }
 
 impl Sender {
+    fn new(tx: TxType) -> Self {
+        Sender {
+            tx: tx,
+            msg_num: Arc::new(AtomicUsize::new(0)),
+        }
+    }
+
     /// Get the next message id
     ///
     /// A value returned from this method *must* be included in the JSON payload
@@ -153,10 +197,7 @@ impl RtmClient {
 
         // setup channels for passing messages
         let (tx, rx) = channel::<WsMessage>();
-        let sender = Sender {
-            tx: tx,
-            msg_num: Arc::new(AtomicUsize::new(0)),
-        };
+        let sender = Sender::new(TxType::Sync(tx));
 
         Ok(RtmClient {
                start_response: start_response,
