@@ -4,7 +4,7 @@ cfg_if! {
     if #[cfg(feature = "future")] {
         extern crate slack;
         extern crate futures;
-        extern crate tokio_core;
+        extern crate tokio;
     } else {}
 }
 
@@ -56,11 +56,8 @@ fn main() {
         0 | 1 => panic!("No api-key in args! Usage: cargo run --features future --example future -- <api-key>"),
         x => args[x - 1].clone(),
     };
-    let mut core = tokio_core::reactor::Core::new().unwrap();
-    let handle = core.handle();
-
-    core.run(Client::login_and_run(api_key, MyHandler, &handle))
-        .unwrap();
+    let mut runtime = tokio::runtime::current_thread::Runtime::new().unwrap();
+    runtime.block_on(Client::login_and_run(api_key, MyHandler)).unwrap();
 }
 
 #[cfg(not(feature = "future"))]

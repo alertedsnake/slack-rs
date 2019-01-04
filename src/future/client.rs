@@ -1,8 +1,8 @@
-use {api, url, reqwest, tokio_core, Error, Event, Sender, TxType, WsMessage};
+use {api, url, reqwest, Error, Event, Sender, TxType, WsMessage};
 use futures::sync::{mpsc, oneshot};
 use futures::{Future, Stream, Sink};
 use futures::future::{err, ok, IntoFuture};
-use tokio_core::net::TcpStream;
+use tokio::net::TcpStream;
 use native_tls::TlsConnector;
 use tokio_tls::TlsConnectorExt;
 use std::net::ToSocketAddrs;
@@ -72,8 +72,7 @@ impl Client {
     /// Run a non-blocking slack client
     // XXX: once `impl Trait` is stabilized we can get rid of all of these `Box`es
     pub fn run<'a, T: EventHandler + 'a>(mut self,
-                                         mut handler: T,
-                                         handle: &tokio_core::reactor::Handle)
+                                         mut handler: T)
                                          -> Box<Future<Item = (), Error = Error> + 'a> {
         // needed to make sure the borrow of self ends within this block so it can be borrowed
         // later below
@@ -111,7 +110,7 @@ impl Client {
                                                             s))))
             }
         };
-        let socket = TcpStream::connect(&addr, handle);
+        let socket = TcpStream::connect(&addr);
         let cx = try_fut!(try_fut!(TlsConnector::builder()).build());
         let tls_handshake = socket
             .map_err(Error::from)
@@ -194,13 +193,12 @@ impl Client {
 
     /// Connect to slack using the provided slack `token`, `EventHandler`, and `reactor::Handle`
     pub fn login_and_run<'a, T, S>(token: S,
-                                   handler: T,
-                                   handle: &'a tokio_core::reactor::Handle)
+                                   handler: T)
                                    -> Box<Future<Item = (), Error = Error> + 'a>
         where T: EventHandler + 'a,
               S: Into<String>
     {
-        Box::new(Client::login(token.into()).and_then(move |client| client.run(handler, &handle)))
+        Box::new(Client::login(token.into()).and_then(move |client| client.run(handler)))
     }
 
     /// Get a reference thread-safe cloneable message `Sender`

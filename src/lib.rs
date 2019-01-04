@@ -33,7 +33,7 @@ cfg_if! {
     if #[cfg(feature = "future")] {
         extern crate tokio_tungstenite;
         extern crate futures;
-        extern crate tokio_core;
+        extern crate tokio;
         extern crate tokio_tls;
         extern crate url;
         extern crate native_tls;

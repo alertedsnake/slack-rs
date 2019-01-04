@@ -18,14 +18,13 @@ log = "0.3.7"
 cfg-if = "0.1.0"
 futures = { version = "0.1.11", optional = true }
 tokio-tungstenite = { version = "0.1.0", optional = true }
-tokio-core = { version = "0.1.4", optional = true }
+tokio = { version = "0.1.13", optional = true }
 tokio-tls = { version = "0.1.0", optional = true }
 native-tls = { version = "0.1.1", optional = true }
 url = { version = "1.4.0", optional = true }
 
 [dev-dependencies]
 futures = "0.1.11"
-tokio-core = "0.1"
 
 [features]
-"future" = ["futures", "tokio-tungstenite", "tokio-core", "tokio-tls", "url", "native-tls"]
+"future" = ["futures", "tokio-tungstenite", "tokio", "tokio-tls", "url", "native-tls"]
