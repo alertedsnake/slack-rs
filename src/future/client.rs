@@ -4,7 +4,7 @@ use futures::{Future, Stream, Sink};
 use futures::future::{err, ok, IntoFuture};
 use tokio::net::TcpStream;
 use native_tls::TlsConnector;
-use tokio_tls::TlsConnectorExt;
+use reqwest::connect::native_tls_async::TlsConnectorExt;
 use std::net::ToSocketAddrs;
 use tungstenite::Message;
 use tokio_tungstenite::client_async;
@@ -47,7 +47,7 @@ macro_rules! try_fut {
 
 impl Client {
     fn login_blocking(token: String) -> Result<Self, Error> {
-        let reqwest_client = reqwest::Client::new()?;
+        let reqwest_client = reqwest::Client::new();
         let start_response = api::rtm::start(&reqwest_client, &token, &Default::default())?;
         let (tx, rx) = mpsc::unbounded();
         let sender = Sender::new(TxType::Future(tx));
@@ -111,7 +111,7 @@ impl Client {
             }
         };
         let socket = TcpStream::connect(&addr);
-        let cx = try_fut!(try_fut!(TlsConnector::builder()).build());
+        let cx = try_fut!(TlsConnector::builder().build());
         let tls_handshake = socket
             .map_err(Error::from)
             .and_then(move |socket| {
@@ -125,7 +125,7 @@ impl Client {
                 .and_then(move |stream| client_async(wss_url, stream).map_err(Error::from));
 
         let client = stream
-            .and_then(move |ws_stream| {
+            .and_then(move |(ws_stream, _resp)| {
                 handler
                     .on_connect(&mut self)
                     .into_future()
@@ -155,6 +155,9 @@ impl Client {
                             }
                                               }
                                           }
+                                          // XXX(sumeet) not sure about Ping and Pong, just added
+                                          // them because slack_api now has them
+                                          Message::Ping(_) | Message::Pong(_) |
                                           Message::Binary(_) => Box::new(ok::<(), Error>(())),
                                       })
                             .for_each(|_| Ok(()));

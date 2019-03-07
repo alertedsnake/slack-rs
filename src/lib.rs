@@ -90,7 +90,7 @@ impl TxType {
             }
             #[cfg(feature = "future")]
             TxType::Future(ref tx) => {
-                tx.send(msg)
+                tx.unbounded_send(msg)
                     .map_err(|err| Error::Internal(format!("{}", err)))
             }
         }
@@ -192,7 +192,7 @@ impl RtmClient {
     /// Logs in to slack. Call this before calling `run`.
     /// Alternatively use `login_and_run`.
     pub fn login(token: &str) -> Result<RtmClient, Error> {
-        let client = reqwest::Client::new()?;
+        let client = reqwest::Client::new();
         let start_response = api::rtm::start(&client, token, &Default::default())?;
 
         // setup channels for passing messages
@@ -214,7 +214,7 @@ impl RtmClient {
             .ok_or(Error::Api("Slack did not provide a URL".into()))?;
 
         let wss_url = reqwest::Url::parse(&start_url)?;
-        let mut websocket = tungstenite::connect(wss_url)?;
+        let (mut websocket, _) = tungstenite::connect(wss_url)?;
 
         handler.on_connect(self);
         // receive loop
@@ -257,7 +257,8 @@ impl RtmClient {
                         }
                     }
                 }
-                tungstenite::Message::Binary(_) => {}
+                tungstenite::Message::Binary(_) => {},
+                _ => {}
             }
         }
     }
