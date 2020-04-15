@@ -4,6 +4,8 @@
 
 - Updates to support new `slack-api` version and remove dependencies on openssl `0.7.x` and hyper
 `0.9.x`.
+- Updated to `slack-api` version `0.22.0`.
+- Updated to `tungstenite` version `0.10`.
 
 ### Breaking Changes
 

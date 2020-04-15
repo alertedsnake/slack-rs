@@ -20,6 +20,7 @@
 
 extern crate reqwest;
 pub extern crate slack_api as api;
+extern crate url;
 #[macro_use]
 extern crate serde_derive;
 extern crate serde_json;
@@ -33,9 +34,8 @@ cfg_if! {
     if #[cfg(feature = "future")] {
         extern crate tokio_tungstenite;
         extern crate futures;
-        extern crate tokio;
+        extern crate tokio_core;
         extern crate tokio_tls;
-        extern crate url;
         extern crate native_tls;
         pub mod future;
     } else {}
@@ -44,15 +44,15 @@ cfg_if! {
 pub mod error;
 pub use error::Error;
 
-pub use api::{Channel, Group, Im, Team, User, Message};
+pub use api::{Channel, Group, Im, Message, Team, User};
 
 mod events;
 pub use events::Event;
 
-use std::sync::Arc;
+use events::{MessageError, MessageSent};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc::{self, channel};
-use events::{MessageSent, MessageError};
+use std::sync::Arc;
 
 /// Implement this trait in your code to handle message events
 pub trait EventHandler {
@@ -84,15 +84,13 @@ enum TxType {
 impl TxType {
     fn send(&self, msg: WsMessage) -> Result<(), Error> {
         match *self {
-            TxType::Sync(ref tx) => {
-                tx.send(msg)
-                    .map_err(|err| Error::Internal(format!("{}", err)))
-            }
+            TxType::Sync(ref tx) => tx
+                .send(msg)
+                .map_err(|err| Error::Internal(format!("{}", err))),
             #[cfg(feature = "future")]
-            TxType::Future(ref tx) => {
-                tx.unbounded_send(msg)
-                    .map_err(|err| Error::Internal(format!("{}", err)))
-            }
+            TxType::Future(ref tx) => tx
+                .send(msg)
+                .map_err(|err| Error::Internal(format!("{}", err))),
         }
     }
 }
@@ -151,10 +149,12 @@ impl Sender {
     pub fn send_message(&self, channel_id: &str, msg: &str) -> Result<usize, Error> {
         let n = self.get_msg_uid();
         let msg_json = serde_json::to_string(&msg)?;
-        let mstr = format!(r#"{{"id": {},"type": "message", "channel": "{}","text": "{}"}}"#,
-                           n,
-                           channel_id,
-                           &msg_json[1..msg_json.len() - 1]);
+        let mstr = format!(
+            r#"{{"id": {},"type": "message", "channel": "{}","text": "{}"}}"#,
+            n,
+            channel_id,
+            &msg_json[1..msg_json.len() - 1]
+        );
 
         self.send(&mstr[..])
             .map_err(|err| Error::Internal(format!("{}", err)))?;
@@ -171,9 +171,10 @@ impl Sender {
     /// `channel_id` is the slack channel id, e.g. `UXYZ1234`, not `#general`.
     pub fn send_typing(&self, channel_id: &str) -> Result<usize, Error> {
         let n = self.get_msg_uid();
-        let mstr = format!(r#"{{"id": {}, "type": "typing", "channel": "{}"}}"#,
-                           n,
-                           channel_id);
+        let mstr = format!(
+            r#"{{"id": {}, "type": "typing", "channel": "{}"}}"#,
+            n, channel_id
+        );
 
         self.send(&mstr)
             .map_err(|err| Error::Internal(format!("{:?}", err)))?;
@@ -192,7 +193,7 @@ impl RtmClient {
     /// Logs in to slack. Call this before calling `run`.
     /// Alternatively use `login_and_run`.
     pub fn login(token: &str) -> Result<RtmClient, Error> {
-        let client = reqwest::Client::new();
+        let client = api::default_client()?;
         let start_response = api::rtm::start(&client, token, &Default::default())?;
 
         // setup channels for passing messages
@@ -200,15 +201,16 @@ impl RtmClient {
         let sender = Sender::new(TxType::Sync(tx));
 
         Ok(RtmClient {
-               start_response: start_response,
-               sender: sender,
-               rx: rx,
-           })
+            start_response: start_response,
+            sender: sender,
+            rx: rx,
+        })
     }
 
     /// Runs the message receive loop
     pub fn run<T: EventHandler>(&self, handler: &mut T) -> Result<(), Error> {
-        let start_url = self.start_response
+        let start_url = self
+            .start_response
             .url
             .as_ref()
             .ok_or(Error::Api("Slack did not provide a URL".into()))?;
@@ -222,18 +224,15 @@ impl RtmClient {
             // try to write out pending messages (if any)
             loop {
                 match self.rx.try_recv() {
-                    Ok(msg) => {
-                        match msg {
-                            WsMessage::Text(text) => {
-                                websocket
-                                    .write_message(tungstenite::Message::Text(text))?
-                            }
-                            WsMessage::Close => {
-                                handler.on_close(self);
-                                return websocket.close(None).map_err(|e| e.into());
-                            }
+                    Ok(msg) => match msg {
+                        WsMessage::Text(text) => {
+                            websocket.write_message(tungstenite::Message::Text(text))?
                         }
-                    }
+                        WsMessage::Close => {
+                            handler.on_close(self);
+                            return websocket.close(None).map_err(|e| e.into());
+                        }
+                    },
                     Err(mpsc::TryRecvError::Disconnected) => {
                         handler.on_close(self);
                         return Err(Error::Internal("rx disconnected".into()));
@@ -247,18 +246,19 @@ impl RtmClient {
 
             // handle the message
             match message {
-                tungstenite::Message::Text(text) => {
-                    match Event::from_json(&text[..]) {
-                        Ok(event) => handler.on_event(self, event),
-                        Err(err) => {
-                            info!("Unable to deserialize slack message, error: {}: json: {}",
-                                  err,
-                                  text);
-                        }
+                tungstenite::Message::Text(text) => match Event::from_json(&text[..]) {
+                    Ok(event) => handler.on_event(self, event),
+                    Err(err) => {
+                        info!(
+                            "Unable to deserialize slack message, error: {}: json: {}",
+                            err, text
+                        );
                     }
-                }
-                tungstenite::Message::Binary(_) => {},
-                _ => {}
+                },
+                tungstenite::Message::Binary(_) => {}
+                tungstenite::Message::Ping(_) => {}
+                tungstenite::Message::Pong(_) => {}
+                tungstenite::Message::Close(_) => {}
             }
         }
     }

@@ -1,10 +1,10 @@
-use {api, url, reqwest, Error, Event, Sender, TxType, WsMessage};
+use {api, url, reqwest, tokio_core, Error, Event, Sender, TxType, WsMessage};
 use futures::sync::{mpsc, oneshot};
 use futures::{Future, Stream, Sink};
 use futures::future::{err, ok, IntoFuture};
-use tokio::net::TcpStream;
+use tokio_core::net::TcpStream;
 use native_tls::TlsConnector;
-use reqwest::connect::native_tls_async::TlsConnectorExt;
+use tokio_tls::TlsConnectorExt;
 use std::net::ToSocketAddrs;
 use tungstenite::Message;
 use tokio_tungstenite::client_async;
@@ -47,7 +47,7 @@ macro_rules! try_fut {
 
 impl Client {
     fn login_blocking(token: String) -> Result<Self, Error> {
-        let reqwest_client = reqwest::Client::new();
+        let reqwest_client = reqwest::Client::new()?;
         let start_response = api::rtm::start(&reqwest_client, &token, &Default::default())?;
         let (tx, rx) = mpsc::unbounded();
         let sender = Sender::new(TxType::Future(tx));
@@ -72,7 +72,8 @@ impl Client {
     /// Run a non-blocking slack client
     // XXX: once `impl Trait` is stabilized we can get rid of all of these `Box`es
     pub fn run<'a, T: EventHandler + 'a>(mut self,
-                                         mut handler: T)
+                                         mut handler: T,
+                                         handle: &tokio_core::reactor::Handle)
                                          -> Box<Future<Item = (), Error = Error> + 'a> {
         // needed to make sure the borrow of self ends within this block so it can be borrowed
         // later below
@@ -110,8 +111,8 @@ impl Client {
                                                             s))))
             }
         };
-        let socket = TcpStream::connect(&addr);
-        let cx = try_fut!(TlsConnector::builder().build());
+        let socket = TcpStream::connect(&addr, handle);
+        let cx = try_fut!(try_fut!(TlsConnector::builder()).build());
         let tls_handshake = socket
             .map_err(Error::from)
             .and_then(move |socket| {
@@ -125,7 +126,7 @@ impl Client {
                 .and_then(move |stream| client_async(wss_url, stream).map_err(Error::from));
 
         let client = stream
-            .and_then(move |(ws_stream, _resp)| {
+            .and_then(move |ws_stream| {
                 handler
                     .on_connect(&mut self)
                     .into_future()
@@ -155,9 +156,6 @@ impl Client {
                             }
                                               }
                                           }
-                                          // XXX(sumeet) not sure about Ping and Pong, just added
-                                          // them because slack_api now has them
-                                          Message::Ping(_) | Message::Pong(_) |
                                           Message::Binary(_) => Box::new(ok::<(), Error>(())),
                                       })
                             .for_each(|_| Ok(()));
@@ -196,12 +194,13 @@ impl Client {
 
     /// Connect to slack using the provided slack `token`, `EventHandler`, and `reactor::Handle`
     pub fn login_and_run<'a, T, S>(token: S,
-                                   handler: T)
+                                   handler: T,
+                                   handle: &'a tokio_core::reactor::Handle)
                                    -> Box<Future<Item = (), Error = Error> + 'a>
         where T: EventHandler + 'a,
               S: Into<String>
     {
-        Box::new(Client::login(token.into()).and_then(move |client| client.run(handler)))
+        Box::new(Client::login(token.into()).and_then(move |client| client.run(handler, &handle)))
     }
 
     /// Get a reference thread-safe cloneable message `Sender`

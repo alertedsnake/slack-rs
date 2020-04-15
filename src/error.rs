@@ -14,9 +14,9 @@
 // limitations under the License.
 //
 
+//use std::error;
 use std::fmt;
 use std::io;
-use std::error;
 use std::string::FromUtf8Error;
 
 use api;
@@ -31,7 +31,7 @@ pub enum Error {
     /// Error decoding websocket text frame Utf8
     Utf8(FromUtf8Error),
     /// Error parsing url
-    Url(::reqwest::UrlError),
+    Url(::url::ParseError),
     /// Error decoding Json
     Json(::serde_json::Error),
     /// Slack Api Error
@@ -46,8 +46,8 @@ impl From<::reqwest::Error> for Error {
     }
 }
 
-impl From<::reqwest::UrlError> for Error {
-    fn from(err: ::reqwest::UrlError) -> Error {
+impl From<::url::ParseError> for Error {
+    fn from(err: ::url::ParseError) -> Error {
         Error::Url(err)
     }
 }
@@ -96,28 +96,30 @@ impl fmt::Display for Error {
     }
 }
 
+/*
 impl error::Error for Error {
     fn description(&self) -> &str {
         match *self {
-            Error::Http(ref e) => e.description(),
-            Error::WebSocket(ref e) => e.description(),
-            Error::Utf8(ref e) => e.description(),
-            Error::Url(ref e) => e.description(),
-            Error::Json(ref e) => e.description(),
-            Error::Api(ref st) |
-            Error::Internal(ref st) => st,
+            Error::Http(ref e) => e,
+            Error::WebSocket(ref e) => e,
+            Error::Utf8(ref e) => e.to_string(),
+            Error::Url(ref e) => e.to_string(),
+            Error::Json(ref e) => e.clone().to_string(),
+            Error::Api(ref st) | Error::Internal(ref st) => st,
         }
     }
 
-    fn cause(&self) -> Option<&error::Error> {
+    /*
+    fn cause(&self) -> Option<dyn error::Error> {
         match *self {
             Error::Http(ref e) => Some(e),
             Error::WebSocket(ref e) => Some(e),
             Error::Utf8(ref e) => Some(e),
             Error::Url(ref e) => Some(e),
             Error::Json(ref e) => Some(e),
-            Error::Api(_) |
-            Error::Internal(_) => None,
+            Error::Api(_) | Error::Internal(_) => None,
         }
     }
+    */
 }
+*/
